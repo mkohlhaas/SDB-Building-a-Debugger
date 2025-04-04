@@ -1,14 +1,11 @@
-// #include <libsdb/libsdb.hpp>
-
 #include <iostream>
+#include <libsdb/error.hpp>
+#include <libsdb/process.hpp>
 #include <readline/history.h>
 #include <readline/readline.h>
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <sys/ptrace.h>
-#include <sys/wait.h>
-#include <unistd.h>
 #include <vector>
 
 // anonymous namespace
@@ -43,37 +40,39 @@ namespace
     }
 
     void
-    resume(pid_t pid)
+    print_stop_reason(const sdb::process &process, sdb::stop_reason reason)
     {
-        if (ptrace(PTRACE_CONT, pid, nullptr, nullptr) < 0)
+        std::cout << "Process " << process.pid() << ' ';
+
+        switch (reason.reason)
         {
-            std::cerr << "couldn't continue\n";
-            std::exit(-1);
+        case sdb::proc_state::stopped:
+            std::cout << "stopped with signal " << sigabbrev_np(reason.info);
+            break;
+        case sdb::proc_state::running:
+            std::cout << "running";
+            break;
+        case sdb::proc_state::exited:
+            std::cout << "exited with status " << static_cast<int>(reason.info);
+            break;
+        case sdb::proc_state::terminated:
+            std::cout << "terminated with signal " << sigabbrev_np(reason.info);
+            break;
         }
+        std::cout << std::endl;
     }
 
     void
-    wait_on_signal(pid_t pid)
-    {
-        int wait_status;
-        int options = 0;
-        if (waitpid(pid, &wait_status, options) < 0)
-        {
-            std::perror("waitpid failed");
-            std::exit(-1);
-        }
-    }
-
-    void
-    handle_command(pid_t pid, std::string_view line)
+    handle_command(sdb::proc_ptr &process, std::string_view line)
     {
         auto args    = split(line, ' ');
         auto command = args[0];
 
         if (is_prefix(command, "continue"))
         {
-            resume(pid);
-            // wait_on_signal(pid);
+            process->resume();
+            auto reason = process->wait_on_signal();
+            print_stop_reason(*process, reason);
         }
         else
         {
@@ -81,52 +80,59 @@ namespace
         }
     }
 
-    pid_t
+    sdb::proc_ptr
     attach(int argc, const char **argv)
     {
-        pid_t pid = 0;
-        if (argc == 3 && argv[1] == std::string_view("-p")) // Passing PID
+        // attch (passing PID)
+        if (argc == 3 && argv[1] == std::string_view("-p"))
         {
-            pid = std::atoi(argv[2]);
-            if (pid <= 0)
-            {
-                std::cerr << "invalid pid\n";
-                return -1;
-            }
-            if (ptrace(PTRACE_ATTACH, pid, nullptr, nullptr) < 0)
-            {
-                std::perror("could not attach");
-                return -1;
-            }
+
+            pid_t pid = std::atoi(argv[2]); // atoi returns 0 on failure
+            return sdb::process::attach(pid);
         }
-        else // Passing program name
+        // launch (passing program name)
+        else
         {
             const char *program_path = argv[1];
-            if ((pid = fork()) < 0)
-            {
-                std::perror("fork failed");
-                return -1;
-            }
+            return sdb::process::launch(program_path);
+        }
+    }
 
-            if (pid == 0)
-            {
-                // We're in the child process!
+    void
+    main_loop(sdb::proc_ptr &process)
+    {
+        char *line = nullptr;
 
-                if (ptrace(PTRACE_TRACEME, 0, nullptr, nullptr) < 0)
+        while ((line = readline("sdb> ")) != nullptr)
+        {
+            std::string line_str;
+            if (line == std::string_view(""))
+            {
+                free(line);
+                if (history_length > 0)
                 {
-                    std::perror("tracing failed");
-                    return -1;
+                    line_str = history_list()[history_length - 1]->line;
                 }
+            }
+            else
+            {
+                line_str = line;
+                add_history(line);
+                free(line);
 
-                // Execute debugee.
-                if (execlp(program_path, program_path, nullptr) < 0)
+                if (!line_str.empty())
                 {
-                    std::perror("exec failed");
-                    return -1;
+                    try
+                    {
+                        handle_command(process, line_str);
+                    }
+                    catch (const sdb::error &err)
+                    {
+                        std::cout << err.what() << '\n';
+                    }
                 }
             }
         }
-        return pid;
     }
 } // namespace
 
@@ -139,39 +145,13 @@ main(int argc, const char **argv)
         return -1;
     }
 
-    // attach and wait
-    pid_t pid = attach(argc, argv);
-    if (pid < 0)
+    try
     {
-        std::cerr << "couldn't attach to process\n";
-        return -1;
+        auto process = attach(argc, argv);
+        main_loop(process);
     }
-
-    wait_on_signal(pid);
-
-    // command line interface (REPL)
-    char *line = nullptr;
-    while ((line = readline("sdb> ")) != nullptr)
+    catch (const sdb::error &err)
     {
-        std::string line_str;
-        if (line == std::string_view(""))
-        {
-            free(line);
-            if (history_length > 0)
-            {
-                line_str = history_list()[history_length - 1]->line;
-            }
-        }
-        else
-        {
-            line_str = line;
-            add_history(line);
-            free(line);
-        }
-
-        if (!line_str.empty())
-        {
-            handle_command(pid, line_str);
-        }
+        std::cout << err.what() << '\n';
     }
 }
