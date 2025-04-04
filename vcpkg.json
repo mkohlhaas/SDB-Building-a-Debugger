@@ -1,6 +1,7 @@
 {
   "dependencies": [
     "catch2",
-    "libedit"
+    "libedit",
+    "readline"
   ]
 }
