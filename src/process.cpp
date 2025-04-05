@@ -18,7 +18,7 @@ namespace
 } // namespace
 
 sdb::proc_ptr
-sdb::process::launch(std::filesystem::path path)
+sdb::process::launch(std::filesystem::path path, bool debug)
 {
     pipe  channel(true);
     pid_t pid;
@@ -33,7 +33,7 @@ sdb::process::launch(std::filesystem::path path)
     {
         channel.close_read(); // child process only writes
 
-        if (ptrace(PTRACE_TRACEME, 0, nullptr, nullptr) < 0)
+        if (debug and ptrace(PTRACE_TRACEME, 0, nullptr, nullptr) < 0)
         {
             exit_with_perror(channel, "tracing failed");
         }
@@ -58,8 +58,11 @@ sdb::process::launch(std::filesystem::path path)
         error::send(std::string(chars, chars + data.size()));
     }
 
-    sdb::proc_ptr proc(new process(pid, true));
-    proc->wait_on_signal();
+    sdb::proc_ptr proc(new process(pid, true, debug));
+    if (debug)
+    {
+        proc->wait_on_signal();
+    }
 
     return proc;
 }
@@ -77,7 +80,7 @@ sdb::process::attach(pid_t pid)
         error::send_errno("could not attach");
     }
 
-    proc_ptr proc(new process(pid, false));
+    proc_ptr proc(new process(pid, false, true));
     proc->wait_on_signal();
 
     return proc;
@@ -89,14 +92,16 @@ sdb::process::~process()
     {
         int status;
 
-        if (state_ == proc_state::running)
+        if (is_attached_)
         {
-            kill(pid_, SIGSTOP);
-            waitpid(pid_, &status, 0);
+            if (state_ == proc_state::running)
+            {
+                kill(pid_, SIGSTOP);
+                waitpid(pid_, &status, 0);
+            }
+            ptrace(PTRACE_DETACH, pid_, nullptr, nullptr);
+            kill(pid_, SIGCONT);
         }
-
-        ptrace(PTRACE_DETACH, pid_, nullptr, nullptr);
-        kill(pid_, SIGCONT);
 
         if (terminate_on_end_)
         {
