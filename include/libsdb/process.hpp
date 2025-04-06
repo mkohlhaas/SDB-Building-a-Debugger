@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <libsdb/registers.hpp>
 #include <memory>
+#include <optional>
 #include <sys/types.h>
 
 namespace sdb
@@ -37,7 +38,8 @@ namespace sdb
       public:
         ~process();
 
-        static proc_ptr launch(std::filesystem::path path, bool debug = true);
+        static proc_ptr launch(std::filesystem::path path, bool debug = true,
+                               std::optional<int> stdout_replacement = std::nullopt);
         static proc_ptr attach(pid_t pid);
         void            resume();
 

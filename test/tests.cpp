@@ -1,6 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <fstream>
+#include <libsdb/bit.hpp>
 #include <libsdb/error.hpp>
+#include <libsdb/pipe.hpp>
 #include <libsdb/process.hpp>
 #include <signal.h>
 #include <sys/types.h>
@@ -76,4 +78,21 @@ TEST_CASE("process::resume already terminated", "[process]")
     proc->resume();
     proc->wait_on_signal();
     REQUIRE_THROWS_AS(proc->resume(), sdb::error);
+}
+
+TEST_CASE("Write register works", "[register]")
+{
+    bool      close_on_exec = false;
+    sdb::pipe channel(close_on_exec);
+
+    auto proc = sdb::process::launch("targets/reg_write", true, channel.get_write());
+    channel.close_write();
+    proc->resume();
+    proc->wait_on_signal();
+    auto &regs = proc->get_registers();
+    regs.write_by_id(sdb::register_id::rsi, 0xcafecafe);
+    proc->resume();
+    proc->wait_on_signal();
+    auto output = channel.read();
+    REQUIRE(sdb::to_string_view(output) == "0xcafecafe");
 }
