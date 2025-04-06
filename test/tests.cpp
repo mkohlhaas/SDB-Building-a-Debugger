@@ -95,4 +95,55 @@ TEST_CASE("Write register works", "[register]")
     proc->wait_on_signal();
     auto output = channel.read();
     REQUIRE(sdb::to_string_view(output) == "0xcafecafe");
+
+    regs.write_by_id(sdb::register_id::mm0, 0xba5eba11);
+    proc->resume();
+    proc->wait_on_signal();
+    output = channel.read();
+    REQUIRE(sdb::to_string_view(output) == "0xba5eba11");
+
+    regs.write_by_id(sdb::register_id::xmm0, 42.24);
+    proc->resume();
+    proc->wait_on_signal();
+    output = channel.read();
+    REQUIRE(sdb::to_string_view(output) == "42.24");
+
+    regs.write_by_id(sdb::register_id::st0, 42.24l);
+    regs.write_by_id(sdb::register_id::fsw, std::uint16_t{0b0011100000000000});
+    regs.write_by_id(sdb::register_id::ftw, std::uint16_t{0b0011111111111111});
+    proc->resume();
+    proc->wait_on_signal();
+    output = channel.read();
+    REQUIRE(sdb::to_string_view(output) == "42.24");
+}
+
+TEST_CASE("Read register works", "[register]")
+{
+    auto  proc = sdb::process::launch("targets/reg_read");
+    auto &regs = proc->get_registers();
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    REQUIRE(regs.read_by_id_as<std::uint64_t>(sdb::register_id::r13) == 0xcafecafe);
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    REQUIRE(regs.read_by_id_as<std::uint8_t>(sdb::register_id::r13b) == 42);
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    REQUIRE(regs.read_by_id_as<sdb::byte64>(sdb::register_id::mm0) == sdb::to_byte64(0xba5eba11ull));
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    REQUIRE(regs.read_by_id_as<sdb::byte128>(sdb::register_id::xmm0) == sdb::to_byte128(64.125));
+
+    proc->resume();
+    proc->wait_on_signal();
+
+    REQUIRE(regs.read_by_id_as<long double>(sdb::register_id::st0) == 64.125L);
 }
