@@ -2,6 +2,7 @@
   "dependencies": [
     "catch2",
     "libedit",
-    "readline"
+    "readline",
+    "fmt"
   ]
 }

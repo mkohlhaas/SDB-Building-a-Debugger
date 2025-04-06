@@ -6,6 +6,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(libedit REQUIRED IMPORTED_TARGET libedit)
+find_package(fmt CONFIG REQUIRED)
 
 include(CTest)
 
