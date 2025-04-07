@@ -2,7 +2,9 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <libsdb/breakpoint_site.hpp>
 #include <libsdb/registers.hpp>
+#include <libsdb/stoppoint_collection.hpp>
 #include <memory>
 #include <optional>
 #include <sys/types.h>
@@ -26,7 +28,6 @@ namespace sdb
         std::uint8_t info;
     };
 
-    class process;
     using proc_ptr = std::unique_ptr<process>;
 
     class process
@@ -80,6 +81,21 @@ namespace sdb
             return virt_addr{get_registers().read_by_id_as<std::uint64_t>(register_id::rip)};
         }
 
+        breakpoint_site &create_breakpoint_site(virt_addr address);
+        // Some way to iterate over and remove breakpoint sites
+
+        stoppoint_collection<breakpoint_site> &
+        breakpoint_sites()
+        {
+            return breakpoint_sites_;
+        }
+
+        const stoppoint_collection<breakpoint_site> &
+        breakpoint_sites() const
+        {
+            return breakpoint_sites_;
+        }
+
       private:
         process(pid_t pid, bool terminate_on_end, bool is_attached)
             : pid_(pid), terminate_on_end_(terminate_on_end), is_attached_(is_attached),
@@ -90,11 +106,13 @@ namespace sdb
         void read_all_registers();
 
         using regs_ptr = std::unique_ptr<registers>;
+        using bp_sites = stoppoint_collection<breakpoint_site>;
 
         pid_t      pid_{0};
         bool       terminate_on_end_{true};
         bool       is_attached_{true};
         proc_state state_{proc_state::stopped};
         regs_ptr   registers_;
+        bp_sites   breakpoint_sites_;
     };
 } // namespace sdb
