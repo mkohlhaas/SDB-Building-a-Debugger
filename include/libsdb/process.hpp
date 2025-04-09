@@ -96,6 +96,14 @@ namespace sdb
             return breakpoint_sites_;
         }
 
+        void
+        set_pc(virt_addr address)
+        {
+            get_registers().write_by_id(register_id::rip, address.addr());
+        }
+
+        sdb::stop_reason step_instruction();
+
       private:
         process(pid_t pid, bool terminate_on_end, bool is_attached)
             : pid_(pid), terminate_on_end_(terminate_on_end), is_attached_(is_attached),

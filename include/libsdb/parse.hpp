@@ -10,7 +10,8 @@
 
 namespace sdb
 {
-    template <typename I>
+    // convert string to number (hex numbers must be prefixed with 0x)
+    template <typename I> // I is the return type in optional
     std::optional<I>
     to_integral(std::string_view sv, int base = 10)
     {
