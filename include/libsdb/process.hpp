@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <libsdb/bit.hpp>
 #include <libsdb/breakpoint_site.hpp>
 #include <libsdb/registers.hpp>
 #include <libsdb/stoppoint_collection.hpp>
@@ -41,8 +42,10 @@ namespace sdb
 
         static proc_ptr launch(std::filesystem::path path, bool debug = true,
                                std::optional<int> stdout_replacement = std::nullopt);
+
         static proc_ptr attach(pid_t pid);
-        void            resume();
+
+        void resume();
 
         stop_reason wait_on_signal();
 
@@ -103,6 +106,18 @@ namespace sdb
         }
 
         sdb::stop_reason step_instruction();
+
+        std::vector<std::byte> read_memory(virt_addr address, std::size_t amount) const;
+
+        void write_memory(virt_addr address, span<const std::byte> data);
+
+        template <typename T>
+        T
+        read_memory_as(virt_addr address) const
+        {
+            auto data = read_memory(address, sizeof(T));
+            return from_bytes<T>(data.data());
+        }
 
       private:
         process(pid_t pid, bool terminate_on_end, bool is_attached)

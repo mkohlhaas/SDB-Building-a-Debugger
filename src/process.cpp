@@ -1,9 +1,11 @@
+#include <libsdb/bit.hpp>
 #include <libsdb/error.hpp>
 #include <libsdb/pipe.hpp>
 #include <libsdb/process.hpp>
 #include <sys/personality.h>
 #include <sys/ptrace.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -296,4 +298,61 @@ sdb::process::step_instruction()
     }
 
     return reason;
+}
+
+std::vector<std::byte>
+sdb::process::read_memory(virt_addr address, std::size_t amount) const
+{
+    std::vector<std::byte> ret(amount);
+    iovec                  local_desc{ret.data(), ret.size()};
+    std::vector<iovec>     remote_descs;
+
+    while (amount > 0)
+    {
+        auto up_to_next_page = 0x1000 - (address.addr() & 0xfff);
+        auto chunk_size      = std::min(amount, up_to_next_page);
+        remote_descs.push_back({reinterpret_cast<void *>(address.addr()), chunk_size});
+        amount -= chunk_size;
+        address += chunk_size;
+    }
+
+    // transfer data from inferior process (remote_descs) to parent process (local_desc)
+    if (process_vm_readv(pid_, &local_desc, 1, remote_descs.data(), remote_descs.size(), 0) < 0)
+    {
+        error::send_errno("could not read process memory");
+    }
+
+    return ret;
+}
+
+void
+sdb::process::write_memory(virt_addr address, span<const std::byte> data)
+{
+    std::size_t written = 0;
+
+    while (written < data.size())
+    {
+        auto remaining = data.size() - written;
+
+        std::uint64_t word; // 8 bytes; ptrace can only write exactly 8 bytes at a time
+        if (remaining >= 8)
+        {
+            word = from_bytes<std::uint64_t>(data.begin() + written);
+        }
+        else
+        {
+            auto read      = read_memory(address + written, 8);
+            auto word_data = reinterpret_cast<char *>(&word);
+            std::memcpy(word_data, data.begin() + written, remaining);
+            std::memcpy(word_data + remaining, read.data() + remaining, 8 - remaining);
+        }
+
+        // write word (8 bytes) to memory
+        if (ptrace(PTRACE_POKEDATA, pid_, address + written, word) < 0)
+        {
+            error::send_errno("failed to write memory");
+        }
+
+        written += 8;
+    }
 }
