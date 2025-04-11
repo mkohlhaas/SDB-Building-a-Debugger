@@ -322,6 +322,20 @@ sdb::process::create_breakpoint_site(virt_addr address, bool hardware, bool inte
     return breakpoint_sites_.push(breakpoint_ptr(new breakpoint_site(*this, address, hardware, internal)));
 }
 
+sdb::watchpoint &
+sdb::process::create_watchpoint(virt_addr address, stoppoint_mode mode, std::size_t size)
+{
+    if (watchpoints_.contains_address(address))
+    {
+        // technically we could have several watchpoints at the same address (but we keep it consistent)
+        error::send("watchpoint already created at address " + std::to_string(address.addr()));
+    }
+
+    using watchpoint_ptr = std::unique_ptr<watchpoint>;
+
+    return watchpoints_.push(watchpoint_ptr(new watchpoint(*this, address, mode, size)));
+}
+
 sdb::stop_reason
 sdb::process::step_instruction()
 {
@@ -464,4 +478,10 @@ sdb::process::clear_hardware_stoppoint(int index)
     auto clear_mask = (0b11 << (index * 2)) | (0b1111 << (index * 4 + 16));
     auto masked     = control & ~clear_mask;
     get_registers().write_by_id(register_id::dr7, masked);
+}
+
+int
+sdb::process::set_watchpoint(watchpoint::id_type id, virt_addr address, stoppoint_mode mode, std::size_t size)
+{
+    return set_hardware_stoppoint(address, mode, size);
 }

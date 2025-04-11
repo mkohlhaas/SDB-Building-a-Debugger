@@ -6,6 +6,7 @@
 #include <libsdb/breakpoint_site.hpp>
 #include <libsdb/registers.hpp>
 #include <libsdb/stoppoint_collection.hpp>
+#include <libsdb/watchpoint.hpp>
 #include <memory>
 #include <optional>
 #include <sys/types.h>
@@ -122,6 +123,22 @@ namespace sdb
         int  set_hardware_breakpoint(breakpoint_site::id_type id, virt_addr address);
         void clear_hardware_stoppoint(int index);
 
+        int set_watchpoint(watchpoint::id_type id, virt_addr address, stoppoint_mode mode, std::size_t size);
+
+        watchpoint &create_watchpoint(virt_addr address, stoppoint_mode mode, std::size_t size);
+
+        stoppoint_collection<watchpoint> &
+        watchpoints()
+        {
+            return watchpoints_;
+        }
+
+        const stoppoint_collection<watchpoint> &
+        watchpoints() const
+        {
+            return watchpoints_;
+        }
+
       private:
         process(pid_t pid, bool terminate_on_end, bool is_attached)
             : pid_(pid), terminate_on_end_(terminate_on_end), is_attached_(is_attached),
@@ -133,14 +150,16 @@ namespace sdb
 
         int set_hardware_stoppoint(virt_addr address, stoppoint_mode mode, std::size_t size);
 
-        using regs_ptr = std::unique_ptr<registers>;
-        using bp_sites = stoppoint_collection<breakpoint_site>;
+        using regs_ptr     = std::unique_ptr<registers>;
+        using bp_sites     = stoppoint_collection<breakpoint_site>;
+        using watch_points = stoppoint_collection<watchpoint>;
 
-        pid_t      pid_{0};
-        bool       terminate_on_end_{true};
-        bool       is_attached_{true};
-        proc_state state_{proc_state::stopped};
-        regs_ptr   registers_;
-        bp_sites   breakpoint_sites_;
+        pid_t        pid_{0};
+        bool         terminate_on_end_{true};
+        bool         is_attached_{true};
+        proc_state   state_{proc_state::stopped};
+        regs_ptr     registers_;
+        bp_sites     breakpoint_sites_;
+        watch_points watchpoints_;
     };
 } // namespace sdb

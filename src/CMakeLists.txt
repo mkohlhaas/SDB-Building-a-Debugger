@@ -1,5 +1,5 @@
 add_library(libsdb process.cpp pipe.cpp registers.cpp breakpoint_site.cpp
-                   disassembler.cpp)
+                   disassembler.cpp watchpoint.cpp)
 
 target_link_libraries(libsdb PRIVATE Zydis::Zydis)
 

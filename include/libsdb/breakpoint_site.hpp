@@ -7,6 +7,7 @@
 namespace sdb
 {
     class process;
+
     class breakpoint_site
     {
 
@@ -63,9 +64,9 @@ namespace sdb
         }
 
       private:
-        breakpoint_site(process &proc, virt_addr address, bool is_hardware = false, bool is_internal = false);
-
         friend process;
+
+        breakpoint_site(process &proc, virt_addr address, bool is_hardware = false, bool is_internal = false);
 
         id_type   id_;
         process  *process_;
