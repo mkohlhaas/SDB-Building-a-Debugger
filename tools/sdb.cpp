@@ -1,3 +1,4 @@
+#include <csignal>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 #include <iostream>
@@ -17,6 +18,15 @@ namespace
 {
     using sstream     = std::stringstream;
     using vec_strings = std::vector<std::string>;
+
+    // inferior process as a global variable
+    sdb::process *g_sdb_process = nullptr;
+
+    void
+    handle_sigint(int)
+    {
+        kill(g_sdb_process->pid(), SIGSTOP);
+    }
 
     vec_strings
     split(std::string_view str, char delimiter)
@@ -44,6 +54,54 @@ namespace
         return std::equal(str.begin(), str.end(), of.begin());
     }
 
+    std::string
+    get_sigtrap_info(const sdb::process &process, sdb::stop_reason reason)
+    {
+        // software breakpoint
+        if (reason.trap_reason == sdb::trap_type::software_break)
+        {
+            auto &site = process.breakpoint_sites().get_by_address(process.get_pc());
+            return fmt::format(" (breakpoint {})", site.id());
+        }
+
+        // hardware breakpoint/watchpoint
+        if (reason.trap_reason == sdb::trap_type::hardware_break)
+        {
+            auto id = process.get_current_hardware_stoppoint();
+
+            // breakpoint
+            if (id.index() == 0)
+            {
+                return fmt::format(" (breakpoint {})", std::get<0>(id));
+            }
+
+            // watchpoint
+            std::string message;
+
+            auto &wp = process.watchpoints().get_by_id(std::get<1>(id));
+            message += fmt::format(" (watchpoint {})", wp.id());
+
+            if (wp.data() == wp.previous_data())
+            {
+                // memory didn't changed
+                message += fmt::format("\nValue: {:#x}", wp.data());
+            }
+            else
+            {
+                // memory changed
+                message += fmt::format("\nOld value: {:#x}\nNew value: {:#x}", wp.previous_data(), wp.data());
+            }
+            return message;
+        }
+
+        if (reason.trap_reason == sdb::trap_type::single_step)
+        {
+            return " (single step)";
+        }
+
+        return ""; // trap reason unknown
+    }
+
     void
     print_stop_reason(const sdb::process &process, sdb::stop_reason reason)
     {
@@ -53,6 +111,10 @@ namespace
         {
         case sdb::proc_state::stopped:
             msg = fmt::format("stopped with signal {} at {:#x}", sigabbrev_np(reason.info), process.get_pc().addr());
+            if (reason.info == SIGTRAP)
+            {
+                msg += get_sigtrap_info(process, reason);
+            }
             break;
         case sdb::proc_state::running:
             std::cout << "running";
@@ -736,6 +798,11 @@ main(int argc, const char **argv)
     try
     {
         auto process = attach(argc, argv);
+
+        // install interrupt handler
+        g_sdb_process = process.get();
+        signal(SIGINT, handle_sigint);
+
         main_loop(process);
     }
     catch (const sdb::error &err)

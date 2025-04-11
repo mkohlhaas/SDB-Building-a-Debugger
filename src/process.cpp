@@ -81,6 +81,12 @@ sdb::process::launch(std::filesystem::path path, bool debug, std::optional<int> 
     // we are inside the child process
     if (pid == 0)
     {
+        // run inferior in its own process group
+        if (setpgid(0, 0) < 0)
+        {
+            exit_with_perror(channel, "could not set pgid");
+        }
+
         personality(ADDR_NO_RANDOMIZE);
         channel.close_read(); // child process only writes
 
@@ -215,11 +221,30 @@ sdb::process::wait_on_signal()
     if (is_attached_ and state_ == proc_state::stopped)
     {
         read_all_registers();
+        augment_stop_reason(reason);
 
         auto instr_begin = get_pc() - 1;
-        if (reason.info == SIGTRAP and breakpoint_sites_.enabled_stoppoint_at_address(instr_begin))
+
+        if (reason.info == SIGTRAP)
         {
-            set_pc(instr_begin);
+            if (reason.trap_reason == trap_type::software_break and         //
+                breakpoint_sites_.contains_address(instr_begin) and         //
+                breakpoint_sites_.get_by_address(instr_begin).is_enabled()) //
+            {
+                set_pc(instr_begin);
+            }
+            else if (reason.trap_reason == trap_type::hardware_break)
+            {
+                auto id = get_current_hardware_stoppoint();
+                if (id.index() == 1)
+                {
+                    watchpoints_.get_by_id(std::get<1>(id)).update_data();
+                }
+            }
+            // else if (reason.trap_reason == trap_type::syscall)
+            // {
+            //     reason = maybe_resume_from_syscall(reason);
+            // }
         }
     }
 
@@ -484,4 +509,56 @@ int
 sdb::process::set_watchpoint(watchpoint::id_type id, virt_addr address, stoppoint_mode mode, std::size_t size)
 {
     return set_hardware_stoppoint(address, mode, size);
+}
+
+void
+sdb::process::augment_stop_reason(sdb::stop_reason &reason)
+{
+    siginfo_t info;
+    if (ptrace(PTRACE_GETSIGINFO, pid_, nullptr, &info) < 0)
+    {
+        error::send_errno("failed to get signal info");
+    }
+
+    reason.trap_reason = trap_type::unknown;
+    if (reason.info == SIGTRAP)
+    {
+        // Linux returns wrong si_code. But for historical reason this can't be changed now in the kernel.
+        // We translate to the correct trap types.
+        switch (info.si_code)
+        {
+        case TRAP_TRACE:
+            reason.trap_reason = trap_type::single_step;    // Trace is actually single step
+            break;
+        case SI_KERNEL:
+            reason.trap_reason = trap_type::software_break; // Kernel is actually software breakpoint
+            break;
+        case TRAP_HWBKPT:
+            reason.trap_reason = trap_type::hardware_break; // Hardware breakpoint is correctly reported
+            break;
+        }
+    }
+}
+
+using var_bp_watchpoint = std::variant<sdb::breakpoint_site::id_type, sdb::watchpoint::id_type>;
+
+var_bp_watchpoint
+sdb::process::get_current_hardware_stoppoint() const
+{
+    auto &regs   = get_registers();
+    auto  status = regs.read_by_id_as<std::uint64_t>(register_id::dr6);
+    auto  index  = __builtin_ctzll(status); // ctz = count trailing zeros (find position of least-significant set bit)
+    auto  id     = static_cast<int>(register_id::dr0) + index;
+    auto  addr   = virt_addr(regs.read_by_id_as<std::uint64_t>(static_cast<register_id>(id)));
+
+    if (breakpoint_sites_.contains_address(addr))
+    {
+        auto site_id = breakpoint_sites_.get_by_address(addr).id();
+        return var_bp_watchpoint{std::in_place_index<0>, site_id};
+    }
+    else
+    {
+        auto watch_id = watchpoints_.get_by_address(addr).id();
+        return var_bp_watchpoint{std::in_place_index<1>, watch_id};
+    }
 }
