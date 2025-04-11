@@ -18,6 +18,53 @@ namespace
         channel.write(reinterpret_cast<std::byte *>(message.data()), message.size());
         exit(-1);
     }
+
+    std::uint64_t
+    encode_hardware_stoppoint_mode(sdb::stoppoint_mode mode)
+    {
+        switch (mode)
+        {
+        case sdb::stoppoint_mode::write:
+            return 0b01;
+        case sdb::stoppoint_mode::read_write:
+            return 0b11;
+        case sdb::stoppoint_mode::execute:
+            return 0b00;
+        default:
+            sdb::error::send("invalid stoppoint mode");
+        }
+    }
+
+    std::uint64_t
+    encode_hardware_stoppoint_size(std::size_t size)
+    {
+        switch (size)
+        {
+        case 1:
+            return 0b00;
+        case 2:
+            return 0b01;
+        case 4:
+            return 0b11;
+        case 8:
+            return 0b10;
+        default:
+            sdb::error::send("invalid stoppoint size");
+        }
+    }
+
+    int
+    find_free_stoppoint_register(std::uint64_t control_register)
+    {
+        for (auto i = 0; i < 4; ++i)
+        {
+            if ((control_register & (0b11 << (i * 2))) == 0)
+            {
+                return i;
+            }
+        }
+        sdb::error::send("no remaining hardware debug registers");
+    }
 } // namespace
 
 sdb::proc_ptr
@@ -263,13 +310,16 @@ sdb::process::write_gprs(const user_regs_struct &gprs)
 }
 
 sdb::breakpoint_site &
-sdb::process::create_breakpoint_site(virt_addr address)
+sdb::process::create_breakpoint_site(virt_addr address, bool hardware, bool internal)
 {
     if (breakpoint_sites_.contains_address(address))
     {
         error::send("breakpoint site already created at address " + std::to_string(address.addr()));
     }
-    return breakpoint_sites_.push(std::unique_ptr<breakpoint_site>(new breakpoint_site(*this, address)));
+
+    using breakpoint_ptr = std::unique_ptr<breakpoint_site>;
+
+    return breakpoint_sites_.push(breakpoint_ptr(new breakpoint_site(*this, address, hardware, internal)));
 }
 
 sdb::stop_reason
@@ -332,10 +382,11 @@ sdb::process::read_memory_without_traps(virt_addr address, std::size_t amount) c
     auto sites  = breakpoint_sites_.get_in_region(address, address + amount);
     for (auto site : sites)
     {
-        if (!site->is_enabled())
+        if (!site->is_enabled() or site->is_hardware())
         {
             continue;
         }
+
         auto offset           = site->address() - address.addr();
         memory[offset.addr()] = site->saved_data_;
     }
@@ -372,4 +423,45 @@ sdb::process::write_memory(virt_addr address, span<const std::byte> data)
 
         written += 8;
     }
+}
+
+int
+sdb::process::set_hardware_stoppoint(virt_addr address, stoppoint_mode mode, std::size_t size)
+{
+    auto &regs       = get_registers();
+    auto  control    = regs.read_by_id_as<std::uint64_t>(register_id::dr7); // read debug register 7
+    int   free_space = find_free_stoppoint_register(control);               // will be 0, 1, 2, or 3
+    auto  id         = static_cast<int>(register_id::dr0) + free_space;
+    regs.write_by_id(static_cast<register_id>(id), address.addr());
+    auto mode_flag = encode_hardware_stoppoint_mode(mode);
+    auto size_flag = encode_hardware_stoppoint_size(size);
+
+    // bit twiddling
+    auto enable_bit = (1 << (free_space * 2));
+    auto mode_bits  = (mode_flag << (free_space * 4 + 16));
+    auto size_bits  = (size_flag << (free_space * 4 + 18));
+    auto clear_mask = (0b11 << (free_space * 2)) | (0b1111 << (free_space * 4 + 16));
+    auto masked     = control & ~clear_mask;
+    masked |= enable_bit | mode_bits | size_bits;
+
+    regs.write_by_id(register_id::dr7, masked);
+
+    return free_space;
+}
+
+int
+sdb::process::set_hardware_breakpoint(breakpoint_site::id_type id, virt_addr address)
+{
+    return set_hardware_stoppoint(address, stoppoint_mode::execute, 1); // size of execution stoppoint must be 1 on x64
+}
+
+void
+sdb::process::clear_hardware_stoppoint(int index)
+{
+    auto id = static_cast<int>(register_id::dr0) + index;
+    get_registers().write_by_id(static_cast<register_id>(id), 0);
+    auto control    = get_registers().read_by_id_as<std::uint64_t>(register_id::dr7);
+    auto clear_mask = (0b11 << (index * 2)) | (0b1111 << (index * 4 + 16));
+    auto masked     = control & ~clear_mask;
+    get_registers().write_by_id(register_id::dr7, masked);
 }

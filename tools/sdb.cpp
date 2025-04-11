@@ -98,6 +98,7 @@ delete <id>
 disable <id>
 enable <id>
 set <address>
+set <address> -h
 )";
         }
         else if (is_prefix(args[1], "memory"))
@@ -283,8 +284,13 @@ write <address> <bytes>
             {
                 fmt::print("current breakpoints:\n");
                 process.breakpoint_sites().for_each([](auto &site) {
-                    fmt::print("{}: address = {:#x}, {}\n", site.id(), site.address().addr(),
-                               site.is_enabled() ? "enabled" : "disabled");
+                    if (!site.is_internal())
+                    {
+                        fmt::print("{}: address = {:#x}, {}\n",
+                                   site.id(),                                   //
+                                   site.address().addr(),                       //
+                                   site.is_enabled() ? "enabled" : "disabled"); //
+                    }
                 });
             }
             return;
@@ -306,7 +312,20 @@ write <address> <bytes>
                 return;
             }
 
-            process.create_breakpoint_site(sdb::virt_addr{*address}).enable();
+            bool hardware = false;
+            if (args.size() == 4)
+            {
+                if (args[3] == "-h")
+                {
+                    hardware = true;
+                }
+                else
+                {
+                    sdb::error::send("invalid breakpoint command argument");
+                }
+            }
+
+            process.create_breakpoint_site(sdb::virt_addr{*address}, hardware).enable();
             return;
         }
 

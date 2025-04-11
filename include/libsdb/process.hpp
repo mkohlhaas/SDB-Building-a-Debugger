@@ -84,8 +84,7 @@ namespace sdb
             return virt_addr{get_registers().read_by_id_as<std::uint64_t>(register_id::rip)};
         }
 
-        breakpoint_site &create_breakpoint_site(virt_addr address);
-        // Some way to iterate over and remove breakpoint sites
+        breakpoint_site &create_breakpoint_site(virt_addr address, bool hardware = false, bool internal = false);
 
         stoppoint_collection<breakpoint_site> &
         breakpoint_sites()
@@ -120,6 +119,9 @@ namespace sdb
             return from_bytes<T>(data.data());
         }
 
+        int  set_hardware_breakpoint(breakpoint_site::id_type id, virt_addr address);
+        void clear_hardware_stoppoint(int index);
+
       private:
         process(pid_t pid, bool terminate_on_end, bool is_attached)
             : pid_(pid), terminate_on_end_(terminate_on_end), is_attached_(is_attached),
@@ -128,6 +130,8 @@ namespace sdb
         }
 
         void read_all_registers();
+
+        int set_hardware_stoppoint(virt_addr address, stoppoint_mode mode, std::size_t size);
 
         using regs_ptr = std::unique_ptr<registers>;
         using bp_sites = stoppoint_collection<breakpoint_site>;
