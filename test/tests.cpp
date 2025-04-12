@@ -5,6 +5,7 @@
 #include <libsdb/error.hpp>
 #include <libsdb/pipe.hpp>
 #include <libsdb/process.hpp>
+#include <libsdb/syscalls.hpp>
 #include <regex>
 #include <signal.h>
 #include <sys/types.h>
@@ -457,4 +458,16 @@ TEST_CASE("Watchpoint detects read", "[watchpoint]")
 
     // watchpoint doesn't change code in anti_debugger
     REQUIRE(sdb::to_string_view(channel.read()) == "Putting pineapple on pizza...\n");
+}
+
+TEST_CASE("Syscall mapping works", "[syscall]")
+{
+    REQUIRE(sdb::syscall_id_to_name(0) == "read");
+    REQUIRE(sdb::syscall_name_to_id("read") == 0);
+
+    REQUIRE(sdb::syscall_id_to_name(57) == "fork");
+    REQUIRE(sdb::syscall_name_to_id("fork") == 57);
+
+    REQUIRE(sdb::syscall_id_to_name(62) == "kill");
+    REQUIRE(sdb::syscall_name_to_id("kill") == 62);
 }

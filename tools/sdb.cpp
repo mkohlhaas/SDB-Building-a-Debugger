@@ -6,6 +6,7 @@
 #include <libsdb/error.hpp>
 #include <libsdb/parse.hpp>
 #include <libsdb/process.hpp>
+#include <libsdb/syscalls.hpp>
 #include <readline/history.h>
 #include <readline/readline.h>
 #include <sstream>
@@ -99,6 +100,27 @@ namespace
             return " (single step)";
         }
 
+        if (reason.trap_reason == sdb::trap_type::syscall)
+        {
+            const auto &info    = *reason.syscall_info;
+            std::string message = " ";
+
+            if (info.entry)
+            {
+                // entering syscall
+                message += "(syscall entry)\n";
+                message +=
+                    fmt::format("syscall: {}({:#x})", sdb::syscall_id_to_name(info.id), fmt::join(info.args, ","));
+            }
+            else
+            {
+                // exiting syscall
+                message += "(syscall exit)\n";
+                message += fmt::format("syscall returned: {:#x}", info.ret);
+            }
+            return message;
+        }
+
         return ""; // trap reason unknown
     }
 
@@ -137,6 +159,7 @@ namespace
         {
             std::cerr << R"(Available commands:
 breakpoint  - Commands for operating on breakpoints
+catchpoint  - Commands for operating on catchpoints
 continue    - Resume the process
 disassemble - Disassemble machine code to assembly
 memory      - Commands for operating on memory
@@ -190,9 +213,17 @@ enable <id>
 set <address> <write|rw|execute> <size>
 )";
         }
+        else if (is_prefix(args[1], "catchpoint"))
+        {
+            std::cerr << R"(Available commands:
+syscall
+syscall none
+syscall <list of syscall IDs or names>
+)";
+        }
         else
         {
-            std::cerr << "no help available on that\n";
+            std::cerr << "no help available on that command\n";
         }
     }
 
@@ -546,6 +577,44 @@ set <address> <write|rw|execute> <size>
     }
 
     void
+    handle_syscall_catchpoint_command(sdb::process &process, const std::vector<std::string> &args)
+    {
+        sdb::syscall_catch_policy policy = sdb::syscall_catch_policy::catch_all();
+
+        if (args.size() == 3 and args[2] == "none")
+        {
+            policy = sdb::syscall_catch_policy::catch_none();
+        }
+        else if (args.size() >= 3)
+        {
+            auto             syscalls = split(args[2], ',');
+            std::vector<int> to_catch;
+            std::transform(begin(syscalls), end(syscalls), std::back_inserter(to_catch),
+                           [](auto &syscall) {                                                     //
+                               return isdigit(syscall[0]) ? sdb::to_integral<int>(syscall).value() //
+                                                          : sdb::syscall_name_to_id(syscall);      //
+                           });
+            policy = sdb::syscall_catch_policy::catch_some(std::move(to_catch));
+        }
+        process.set_syscall_catch_policy(std::move(policy));
+    }
+
+    void
+    handle_catchpoint_command(sdb::process &process, const std::vector<std::string> &args)
+    {
+        if (args.size() < 2)
+        {
+            print_help({"help", "catchpoint"});
+            return;
+        }
+
+        if (is_prefix(args[1], "syscall"))
+        {
+            handle_syscall_catchpoint_command(process, args);
+        }
+    }
+
+    void
     handle_memory_read_command(sdb::process &process, const std::vector<std::string> &args)
     {
         auto address = sdb::to_integral<std::uint64_t>(args[2], 16);
@@ -717,6 +786,10 @@ set <address> <write|rw|execute> <size>
         else if (is_prefix(command, "watchpoint"))
         {
             handle_watchpoint_command(*process, args);
+        }
+        else if (is_prefix(command, "catchpoint"))
+        {
+            handle_catchpoint_command(*process, args);
         }
         else if (is_prefix(command, "help"))
         {
