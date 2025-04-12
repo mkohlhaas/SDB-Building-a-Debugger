@@ -102,7 +102,7 @@ namespace sdb
         }
 
         mode             mode_ = mode::none;
-        std::vector<int> to_catch_; // syscalls to catch (using syscall IDs)
+        std::vector<int> to_catch_; // syscalls to catch (using syscall IDs) for mode::some
     };
 
     using proc_ptr = std::unique_ptr<process>;
