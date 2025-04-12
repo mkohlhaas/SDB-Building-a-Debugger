@@ -26,18 +26,83 @@ namespace sdb
         single_step,
         software_break,
         hardware_break,
+        syscall,
         unknown
     };
 
-    using opt_trap_type = std::optional<trap_type>;
+    struct syscall_information
+    {
+        std::uint16_t id;
+        bool          entry; // entry or exit ?
+        union {
+            // the inferior will halt twice for each syscall: on entry ...
+            std::array<std::uint64_t, 6> args; // args for syscall
+            // ... and on exit (see PTRACE_SYSCALL in resume)
+            std::int64_t ret; // return code
+        };
+    };
+
+    using opt_trap_type    = std::optional<trap_type>;
+    using opt_syscall_info = std::optional<syscall_information>;
 
     struct stop_reason
     {
         stop_reason(int wait_status);
 
-        proc_state    reason;
-        std::uint8_t  info;
-        opt_trap_type trap_reason;
+        proc_state       reason;
+        std::uint8_t     info;
+        opt_trap_type    trap_reason;
+        opt_syscall_info syscall_info; // filled in when stop occurred due to a syscall
+    };
+
+    class syscall_catch_policy
+    {
+      public:
+        enum mode
+        {
+            none,
+            some,
+            all
+        };
+
+        // named constructors
+        static syscall_catch_policy
+        catch_all()
+        {
+            return {mode::all, {}};
+        }
+
+        static syscall_catch_policy
+        catch_none()
+        {
+            return {mode::none, {}};
+        }
+
+        static syscall_catch_policy
+        catch_some(std::vector<int> to_catch)
+        {
+            return {mode::some, std::move(to_catch)};
+        }
+
+        mode
+        get_mode() const
+        {
+            return mode_;
+        }
+
+        const std::vector<int> &
+        get_to_catch() const
+        {
+            return to_catch_;
+        }
+
+      private:
+        syscall_catch_policy(mode mode, std::vector<int> to_catch) : mode_(mode), to_catch_(std::move(to_catch))
+        {
+        }
+
+        mode             mode_ = mode::none;
+        std::vector<int> to_catch_; // syscalls to catch (using syscall IDs)
     };
 
     using proc_ptr = std::unique_ptr<process>;
@@ -151,6 +216,12 @@ namespace sdb
 
         std::variant<breakpoint_site::id_type, watchpoint::id_type> get_current_hardware_stoppoint() const;
 
+        void
+        set_syscall_catch_policy(syscall_catch_policy info)
+        {
+            syscall_catch_policy_ = std::move(info);
+        }
+
       private:
         process(pid_t pid, bool terminate_on_end, bool is_attached)
             : pid_(pid), terminate_on_end_(terminate_on_end), is_attached_(is_attached),
@@ -158,22 +229,23 @@ namespace sdb
         {
         }
 
-        void read_all_registers();
-
-        int set_hardware_stoppoint(virt_addr address, stoppoint_mode mode, std::size_t size);
-
-        void augment_stop_reason(stop_reason &reason);
+        void             read_all_registers();
+        int              set_hardware_stoppoint(virt_addr address, stoppoint_mode mode, std::size_t size);
+        void             augment_stop_reason(stop_reason &reason);
+        sdb::stop_reason maybe_resume_from_syscall(const stop_reason &reason);
 
         using regs_ptr     = std::unique_ptr<registers>;
         using bp_sites     = stoppoint_collection<breakpoint_site>;
         using watch_points = stoppoint_collection<watchpoint>;
 
-        pid_t        pid_{0};
-        bool         terminate_on_end_{true};
-        bool         is_attached_{true};
-        proc_state   state_{proc_state::stopped};
-        regs_ptr     registers_;
-        bp_sites     breakpoint_sites_;
-        watch_points watchpoints_;
+        pid_t                pid_{0};
+        bool                 terminate_on_end_{true};
+        bool                 is_attached_{true};
+        syscall_catch_policy syscall_catch_policy_   = syscall_catch_policy::catch_none();
+        bool                 expecting_syscall_exit_ = false;
+        proc_state           state_{proc_state::stopped};
+        regs_ptr             registers_;
+        bp_sites             breakpoint_sites_;
+        watch_points         watchpoints_;
     };
 } // namespace sdb

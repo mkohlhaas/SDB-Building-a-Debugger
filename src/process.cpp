@@ -65,6 +65,16 @@ namespace
         }
         sdb::error::send("no remaining hardware debug registers");
     }
+
+    void
+    set_ptrace_options(pid_t pid)
+    {
+        // trace syscalls
+        if (ptrace(PTRACE_SETOPTIONS, pid, nullptr, PTRACE_O_TRACESYSGOOD) < 0)
+        {
+            sdb::error::send_errno("failed to set TRACESYSGOOD option");
+        }
+    }
 } // namespace
 
 sdb::proc_ptr
@@ -127,6 +137,7 @@ sdb::process::launch(std::filesystem::path path, bool debug, std::optional<int> 
     if (debug)
     {
         proc->wait_on_signal();
+        set_ptrace_options(proc->pid()); // trace syscalls
     }
 
     return proc;
@@ -147,6 +158,7 @@ sdb::process::attach(pid_t pid)
 
     proc_ptr proc(new process(pid, false, true));
     proc->wait_on_signal();
+    set_ptrace_options(proc->pid()); // trace syscalls
 
     return proc;
 }
@@ -196,7 +208,18 @@ sdb::process::resume()
         bp.enable();
     }
 
-    if (ptrace(PTRACE_CONT, pid_, nullptr, nullptr) < 0)
+    auto request = [this]() {
+        if (syscall_catch_policy::mode::none == syscall_catch_policy_.get_mode())
+        {
+            return PTRACE_CONT;
+        }
+        else
+        {
+            return PTRACE_SYSCALL;
+        }
+    }();
+
+    if (ptrace(request, pid_, nullptr, nullptr) < 0)
     {
         error::send_errno("could not resume");
     }
@@ -241,10 +264,10 @@ sdb::process::wait_on_signal()
                     watchpoints_.get_by_id(std::get<1>(id)).update_data();
                 }
             }
-            // else if (reason.trap_reason == trap_type::syscall)
-            // {
-            //     reason = maybe_resume_from_syscall(reason);
-            // }
+            else if (reason.trap_reason == trap_type::syscall)
+            {
+                reason = maybe_resume_from_syscall(reason);
+            }
         }
     }
 
@@ -520,6 +543,45 @@ sdb::process::augment_stop_reason(sdb::stop_reason &reason)
         error::send_errno("failed to get signal info");
     }
 
+    if (reason.info == (SIGTRAP | 0x80))
+    {
+        // https://devblogs.microsoft.com/oldnewthing/20241114-00/?p=110521
+        // the C++ standard library term for “construct an object inside a container” is “emplace”.
+        auto &sys_info = reason.syscall_info.emplace(); // def construct syscall_information inside reason with emplace
+        auto &regs     = get_registers();
+
+        if (expecting_syscall_exit_)
+        {
+            sys_info.entry          = false;                                                    // exit
+            sys_info.id             = regs.read_by_id_as<std::uint64_t>(register_id::orig_rax); // syscall#
+            sys_info.ret            = regs.read_by_id_as<std::uint64_t>(register_id::rax);      // return value
+            expecting_syscall_exit_ = false;
+        }
+        else
+        {
+            sys_info.entry = true;                                                     // entry
+            sys_info.id    = regs.read_by_id_as<std::uint64_t>(register_id::orig_rax); // syscall#
+
+            // According to the SYSV ABI, the system stores the arguments to the syscall in the following registers, in
+            // order: rdi, rsi, rdx, r10, r8, and r9:
+
+            std::array<register_id, 6> arg_regs = {register_id::rdi, register_id::rsi, register_id::rdx,
+                                                   register_id::r10, register_id::r8,  register_id::r9};
+            for (auto i = 0; i < 6; ++i)
+            {
+                sys_info.args[i] = regs.read_by_id_as<std::uint64_t>(arg_regs[i]);
+            }
+
+            expecting_syscall_exit_ = true; // we expect next trap will be syscall exit
+        }
+
+        reason.info        = SIGTRAP;
+        reason.trap_reason = trap_type::syscall;
+        return;
+    }
+
+    expecting_syscall_exit_ = false;
+
     reason.trap_reason = trap_type::unknown;
     if (reason.info == SIGTRAP)
     {
@@ -561,4 +623,25 @@ sdb::process::get_current_hardware_stoppoint() const
         auto watch_id = watchpoints_.get_by_address(addr).id();
         return var_bp_watchpoint{std::in_place_index<1>, watch_id};
     }
+}
+
+sdb::stop_reason
+sdb::process::maybe_resume_from_syscall(const stop_reason &reason)
+{
+    // no need to check for mode::none as prcoess hasn't been continued with PTRACE_SYSCALL
+
+    if (syscall_catch_policy::mode::some == syscall_catch_policy_.get_mode())
+    {
+        auto &to_catch = syscall_catch_policy_.get_to_catch();
+        auto  found    = std::find(begin(to_catch), end(to_catch), reason.syscall_info->id);
+
+        if (found == end(to_catch))
+        {
+            // didn't find any of the traced syscall - just continue
+            resume();
+            return wait_on_signal();
+        }
+    }
+
+    return reason;
 }
