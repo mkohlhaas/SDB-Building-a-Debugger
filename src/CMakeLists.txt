@@ -7,7 +7,8 @@ add_library(
   disassembler.cpp
   watchpoint.cpp
   syscalls.cpp
-  elf.cpp)
+  elf.cpp
+  types.cpp)
 
 target_link_libraries(libsdb PRIVATE Zydis::Zydis)
 
