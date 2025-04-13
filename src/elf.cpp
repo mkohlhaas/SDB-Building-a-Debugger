@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cxxabi.h>
 #include <fcntl.h>
 #include <libsdb/bit.hpp>
 #include <libsdb/elf.hpp>
@@ -41,6 +43,8 @@ elf::elf(const std::filesystem::path &path)
 
     parse_section_headers();
     build_section_map();
+    parse_symbol_table();
+    build_symbol_maps();
 }
 
 elf::~elf()
@@ -165,4 +169,128 @@ elf::get_section_start_address(std::string_view name) const
 
     return sect ? std::make_optional(file_addr{*this, sect.value()->sh_addr}) //
                 : std::nullopt;
+}
+
+void
+elf::parse_symbol_table()
+{
+    // check secionts .symtab and .dynsym for symbols
+    auto opt_symtab = get_section(".symtab");
+    if (!opt_symtab)
+    {
+        opt_symtab = get_section(".dynsym");
+        if (!opt_symtab)
+        {
+            return; // no symbols available
+        }
+    }
+
+    auto symtab = *opt_symtab;
+    symbol_table_.resize(symtab->sh_size / symtab->sh_entsize);
+    std::copy(data_ + symtab->sh_offset,                   //
+              data_ + symtab->sh_offset + symtab->sh_size, //
+              reinterpret_cast<std::byte *>(symbol_table_.data()));
+}
+
+void
+elf::build_symbol_maps()
+{
+    for (auto &symbol : symbol_table_)
+    {
+        auto mangled_name = get_string(symbol.st_name);
+        int  demangle_status;
+        auto demangled_name = abi::__cxa_demangle(mangled_name.data(), nullptr, nullptr, &demangle_status);
+        if (demangle_status == 0)
+        {
+            symbol_name_map_.insert({demangled_name, &symbol});
+            free(demangled_name);
+        }
+
+        symbol_name_map_.insert({mangled_name, &symbol});
+        if (symbol.st_value != 0 and symbol.st_name != 0 and ELF64_ST_TYPE(symbol.st_info) != STT_TLS)
+        {
+            auto addr_range = std::pair(file_addr{*this, symbol.st_value},                   //
+                                        file_addr{*this, symbol.st_value + symbol.st_size}); //
+            symbol_addr_map_.insert({addr_range, &symbol});
+        }
+    }
+}
+
+std::vector<const Elf64_Sym *>
+elf::get_symbols_by_name(std::string_view name) const
+{
+    auto [begin, end] = symbol_name_map_.equal_range(name);
+    std::vector<const Elf64_Sym *> ret;
+    std::transform(begin,                                   //
+                   end,                                     //
+                   std::back_inserter(ret),                 //
+                   [](auto &pair) { return pair.second; }); //
+    return ret;
+}
+
+std::optional<const Elf64_Sym *>
+elf::get_symbol_at_address(file_addr file_address) const
+{
+    if (file_address.elf_file() != this)
+    {
+        return std::nullopt;
+    }
+
+    file_addr null_addr;
+
+    auto it = symbol_addr_map_.find({file_address, null_addr});
+    if (it == end(symbol_addr_map_))
+    {
+        return std::nullopt;
+    }
+
+    return it->second;
+}
+
+std::optional<const Elf64_Sym *>
+elf::get_symbol_at_address(virt_addr virt_address) const
+{
+    return get_symbol_at_address(virt_address.to_file_addr(*this));
+}
+
+std::optional<const Elf64_Sym *>
+elf::get_symbol_containing_address(file_addr file_address) const
+{
+    if (file_address.elf_file() != this or symbol_addr_map_.empty())
+    {
+        return std::nullopt;
+    }
+
+    file_addr null_addr;
+    auto      it = symbol_addr_map_.lower_bound({file_address, null_addr});
+    if (it != end(symbol_addr_map_))
+    {
+        if (auto [file_address_pair, symbol] = *it; file_address_pair.first == file_address)
+        {
+            return symbol;
+        }
+    }
+
+    // if the current iterator is the begin iterator, there is no entry preceding it, so we return an empty optional
+    if (it == begin(symbol_addr_map_))
+    {
+        return std::nullopt;
+    }
+
+    --it;
+
+    // the symbol containing the address begins earlier than the address and spans past it
+    if (auto [file_address_pair, symbol] = *it; file_address_pair.first < file_address and //
+                                                file_address_pair.second > file_address)
+    {
+        return symbol;
+    }
+
+    return std::nullopt;
+}
+
+std::optional<const Elf64_Sym *>
+elf::get_symbol_containing_address(virt_addr virt_address) const
+{
+    return get_symbol_containing_address(virt_address.to_file_addr(*this));
 }
