@@ -8,7 +8,8 @@ add_library(
   watchpoint.cpp
   syscalls.cpp
   elf.cpp
-  types.cpp)
+  types.cpp
+  target.cpp)
 
 target_link_libraries(libsdb PRIVATE Zydis::Zydis)
 

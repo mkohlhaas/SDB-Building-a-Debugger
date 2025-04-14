@@ -1,3 +1,5 @@
+#include <elf.h>
+#include <fstream>
 #include <libsdb/bit.hpp>
 #include <libsdb/error.hpp>
 #include <libsdb/pipe.hpp>
@@ -77,8 +79,10 @@ namespace
     }
 } // namespace
 
-sdb::proc_ptr
-sdb::process::launch(std::filesystem::path path, bool debug, std::optional<int> stdout_replacement)
+using namespace sdb;
+
+proc_ptr
+process::launch(std::filesystem::path path, bool debug, std::optional<int> stdout_replacement)
 {
     pipe  channel(true);
     pid_t pid;
@@ -143,8 +147,8 @@ sdb::process::launch(std::filesystem::path path, bool debug, std::optional<int> 
     return proc;
 }
 
-sdb::proc_ptr
-sdb::process::attach(pid_t pid)
+proc_ptr
+process::attach(pid_t pid)
 {
     if (pid == 0)
     {
@@ -163,7 +167,7 @@ sdb::process::attach(pid_t pid)
     return proc;
 }
 
-sdb::process::~process()
+process::~process()
 {
     if (pid_ != 0)
     {
@@ -189,7 +193,7 @@ sdb::process::~process()
 }
 
 void
-sdb::process::resume()
+process::resume()
 {
     auto pc = get_pc();
     if (breakpoint_sites_.enabled_stoppoint_at_address(pc))
@@ -227,8 +231,8 @@ sdb::process::resume()
     state_ = proc_state::running;
 }
 
-sdb::stop_reason
-sdb::process::wait_on_signal()
+stop_reason
+process::wait_on_signal()
 {
     int wait_status;
     int options = 0;
@@ -274,7 +278,7 @@ sdb::process::wait_on_signal()
     return reason;
 }
 
-sdb::stop_reason::stop_reason(int wait_status)
+stop_reason::stop_reason(int wait_status)
 {
     if (WIFEXITED(wait_status))
     {
@@ -295,7 +299,7 @@ sdb::stop_reason::stop_reason(int wait_status)
 
 // read registers into user struct
 void
-sdb::process::read_all_registers()
+process::read_all_registers()
 {
     if (ptrace(PTRACE_GETREGS, pid_, nullptr, &get_registers().data_.regs) < 0)
     {
@@ -331,7 +335,7 @@ sdb::process::read_all_registers()
 
 // write user struct (data) into user area
 void
-sdb::process::write_user_area(std::size_t offset, std::uint64_t data)
+process::write_user_area(std::size_t offset, std::uint64_t data)
 {
     if (ptrace(PTRACE_POKEUSER, pid_, offset, data) < 0)
     {
@@ -340,7 +344,7 @@ sdb::process::write_user_area(std::size_t offset, std::uint64_t data)
 }
 
 void
-sdb::process::write_fprs(const user_fpregs_struct &fprs)
+process::write_fprs(const user_fpregs_struct &fprs)
 {
     if (ptrace(PTRACE_SETFPREGS, pid_, nullptr, &fprs) < 0)
     {
@@ -349,7 +353,7 @@ sdb::process::write_fprs(const user_fpregs_struct &fprs)
 }
 
 void
-sdb::process::write_gprs(const user_regs_struct &gprs)
+process::write_gprs(const user_regs_struct &gprs)
 {
     if (ptrace(PTRACE_SETREGS, pid_, nullptr, &gprs) < 0)
     {
@@ -357,8 +361,8 @@ sdb::process::write_gprs(const user_regs_struct &gprs)
     }
 }
 
-sdb::breakpoint_site &
-sdb::process::create_breakpoint_site(virt_addr address, bool hardware, bool internal)
+breakpoint_site &
+process::create_breakpoint_site(virt_addr address, bool hardware, bool internal)
 {
     if (breakpoint_sites_.contains_address(address))
     {
@@ -370,8 +374,8 @@ sdb::process::create_breakpoint_site(virt_addr address, bool hardware, bool inte
     return breakpoint_sites_.push(breakpoint_ptr(new breakpoint_site(*this, address, hardware, internal)));
 }
 
-sdb::watchpoint &
-sdb::process::create_watchpoint(virt_addr address, stoppoint_mode mode, std::size_t size)
+watchpoint &
+process::create_watchpoint(virt_addr address, stoppoint_mode mode, std::size_t size)
 {
     if (watchpoints_.contains_address(address))
     {
@@ -384,8 +388,8 @@ sdb::process::create_watchpoint(virt_addr address, stoppoint_mode mode, std::siz
     return watchpoints_.push(watchpoint_ptr(new watchpoint(*this, address, mode, size)));
 }
 
-sdb::stop_reason
-sdb::process::step_instruction()
+stop_reason
+process::step_instruction()
 {
     std::optional<breakpoint_site *> to_reenable;
 
@@ -412,12 +416,12 @@ sdb::process::step_instruction()
     return reason;
 }
 
-std::vector<std::byte>
-sdb::process::read_memory(virt_addr address, std::size_t amount) const
+vec_bytes
+process::read_memory(virt_addr address, std::size_t amount) const
 {
-    std::vector<std::byte> ret(amount);
-    iovec                  local_desc{ret.data(), ret.size()};
-    std::vector<iovec>     remote_descs;
+    vec_bytes          ret(amount);
+    iovec              local_desc{ret.data(), ret.size()};
+    std::vector<iovec> remote_descs;
 
     while (amount > 0)
     {
@@ -437,8 +441,8 @@ sdb::process::read_memory(virt_addr address, std::size_t amount) const
     return ret;
 }
 
-std::vector<std::byte>
-sdb::process::read_memory_without_traps(virt_addr address, std::size_t amount) const
+vec_bytes
+process::read_memory_without_traps(virt_addr address, std::size_t amount) const
 {
     auto memory = read_memory(address, amount);
     auto sites  = breakpoint_sites_.get_in_region(address, address + amount);
@@ -456,7 +460,7 @@ sdb::process::read_memory_without_traps(virt_addr address, std::size_t amount) c
 }
 
 void
-sdb::process::write_memory(virt_addr address, span<const std::byte> data)
+process::write_memory(virt_addr address, span<const std::byte> data)
 {
     std::size_t written = 0;
 
@@ -488,7 +492,7 @@ sdb::process::write_memory(virt_addr address, span<const std::byte> data)
 }
 
 int
-sdb::process::set_hardware_stoppoint(virt_addr address, stoppoint_mode mode, std::size_t size)
+process::set_hardware_stoppoint(virt_addr address, stoppoint_mode mode, std::size_t size)
 {
     auto &regs       = get_registers();
     auto  control    = regs.read_by_id_as<std::uint64_t>(register_id::dr7); // read debug register 7
@@ -512,13 +516,13 @@ sdb::process::set_hardware_stoppoint(virt_addr address, stoppoint_mode mode, std
 }
 
 int
-sdb::process::set_hardware_breakpoint(breakpoint_site::id_type id, virt_addr address)
+process::set_hardware_breakpoint(breakpoint_site::id_type id, virt_addr address)
 {
     return set_hardware_stoppoint(address, stoppoint_mode::execute, 1); // size of execution stoppoint must be 1 on x64
 }
 
 void
-sdb::process::clear_hardware_stoppoint(int index)
+process::clear_hardware_stoppoint(int index)
 {
     auto id = static_cast<int>(register_id::dr0) + index;
     get_registers().write_by_id(static_cast<register_id>(id), 0);
@@ -529,13 +533,13 @@ sdb::process::clear_hardware_stoppoint(int index)
 }
 
 int
-sdb::process::set_watchpoint(watchpoint::id_type id, virt_addr address, stoppoint_mode mode, std::size_t size)
+process::set_watchpoint(watchpoint::id_type id, virt_addr address, stoppoint_mode mode, std::size_t size)
 {
     return set_hardware_stoppoint(address, mode, size);
 }
 
 void
-sdb::process::augment_stop_reason(sdb::stop_reason &reason)
+process::augment_stop_reason(sdb::stop_reason &reason)
 {
     siginfo_t info;
     if (ptrace(PTRACE_GETSIGINFO, pid_, nullptr, &info) < 0)
@@ -605,7 +609,7 @@ sdb::process::augment_stop_reason(sdb::stop_reason &reason)
 using var_bp_watchpoint = std::variant<sdb::breakpoint_site::id_type, sdb::watchpoint::id_type>;
 
 var_bp_watchpoint
-sdb::process::get_current_hardware_stoppoint() const
+process::get_current_hardware_stoppoint() const
 {
     auto &regs   = get_registers();
     auto  status = regs.read_by_id_as<std::uint64_t>(register_id::dr6);
@@ -625,8 +629,8 @@ sdb::process::get_current_hardware_stoppoint() const
     }
 }
 
-sdb::stop_reason
-sdb::process::maybe_resume_from_syscall(const stop_reason &reason)
+stop_reason
+process::maybe_resume_from_syscall(const stop_reason &reason)
 {
     // no need to check for mode::none as prcoess hasn't been continued with PTRACE_SYSCALL
 
@@ -644,4 +648,24 @@ sdb::process::maybe_resume_from_syscall(const stop_reason &reason)
     }
 
     return reason;
+}
+
+// read in the whole auxiliary vector
+process::map_macro_auxv
+process::get_auxv() const
+{
+    map_macro_auxv ret;
+
+    auto          path = "/proc/" + std::to_string(pid_) + "/auxv";
+    std::ifstream auxv(path);
+    std::uint64_t id, value;
+    auto          read = [&](auto &into) { auxv.read(reinterpret_cast<char *>(&into), sizeof(into)); };
+
+    for (read(id); id != AT_NULL; read(id))
+    {
+        read(value);
+        ret[id] = value;
+    }
+
+    return ret;
 }

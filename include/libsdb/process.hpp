@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <sys/types.h>
+#include <unordered_map>
 
 namespace sdb
 {
@@ -182,8 +183,10 @@ namespace sdb
 
         sdb::stop_reason step_instruction();
 
-        std::vector<std::byte> read_memory(virt_addr address, std::size_t amount) const;
-        std::vector<std::byte> read_memory_without_traps(virt_addr address, std::size_t amount) const;
+        using vec_bytes = std::vector<std::byte>;
+
+        vec_bytes read_memory(virt_addr address, std::size_t amount) const;
+        vec_bytes read_memory_without_traps(virt_addr address, std::size_t amount) const;
 
         void write_memory(virt_addr address, span<const std::byte> data);
 
@@ -221,6 +224,12 @@ namespace sdb
         {
             syscall_catch_policy_ = std::move(info);
         }
+
+        // maps the macro values (for example, AT_ENTRY) to the value of
+        // the corresponding entry in the auxiliary vector
+        using map_macro_auxv = std::unordered_map<int, std::uint64_t>;
+
+        map_macro_auxv get_auxv() const;
 
       private:
         process(pid_t pid, bool terminate_on_end, bool is_attached)

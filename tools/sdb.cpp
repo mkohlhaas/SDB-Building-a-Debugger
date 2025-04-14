@@ -7,6 +7,7 @@
 #include <libsdb/parse.hpp>
 #include <libsdb/process.hpp>
 #include <libsdb/syscalls.hpp>
+#include <libsdb/target.hpp>
 #include <readline/history.h>
 #include <readline/readline.h>
 #include <sstream>
@@ -124,22 +125,40 @@ namespace
         return ""; // trap reason unknown
     }
 
+    std::string
+    get_signal_stop_reason(const sdb::target &target, sdb::stop_reason reason)
+    {
+        auto       &process = target.get_process();
+        std::string msg     = fmt::format("stopped with signal {} at {:#x}", //
+                                          sigabbrev_np(reason.info),         //
+                                          process.get_pc().addr());
+
+        auto func = target.get_elf().get_symbol_containing_address(process.get_pc());
+        if (func and ELF64_ST_TYPE(func.value()->st_info) == STT_FUNC)
+        {
+            msg += fmt::format(" ({})", target.get_elf().get_string(func.value()->st_name));
+        }
+
+        if (reason.info == SIGTRAP)
+        {
+            msg += get_sigtrap_info(process, reason);
+        }
+
+        return msg;
+    }
+
     void
-    print_stop_reason(const sdb::process &process, sdb::stop_reason reason)
+    print_stop_reason(const sdb::target &target, sdb::stop_reason reason)
     {
         std::string msg;
 
         switch (reason.reason)
         {
         case sdb::proc_state::stopped:
-            msg = fmt::format("stopped with signal {} at {:#x}", sigabbrev_np(reason.info), process.get_pc().addr());
-            if (reason.info == SIGTRAP)
-            {
-                msg += get_sigtrap_info(process, reason);
-            }
+            msg = get_signal_stop_reason(target, reason);
             break;
         case sdb::proc_state::running:
-            std::cout << "running";
+            msg = "is running";
             break;
         case sdb::proc_state::exited:
             msg = fmt::format("exited with status {}", static_cast<int>(reason.info));
@@ -149,7 +168,7 @@ namespace
             break;
         }
 
-        fmt::print("Process {} {}\n", process.pid(), msg);
+        fmt::print("process {} {}\n", target.get_process().pid(), msg);
     }
 
     void
@@ -702,13 +721,13 @@ syscall <list of syscall IDs or names>
     }
 
     void
-    handle_stop(sdb::process &process, sdb::stop_reason reason)
+    handle_stop(sdb::target &target, sdb::stop_reason reason)
     {
-        print_stop_reason(process, reason);
+        print_stop_reason(target, reason);
 
         if (reason.reason == sdb::proc_state::stopped)
         {
-            print_disassembly(process, process.get_pc(), 5); // print 5 lines of disassembly
+            print_disassembly(target.get_process(), target.get_process().get_pc(), 5); // print 5 lines of disassembly
         }
     }
 
@@ -751,16 +770,17 @@ syscall <list of syscall IDs or names>
     }
 
     void
-    handle_command(sdb::proc_ptr &process, std::string_view line)
+    handle_command(sdb::target_ptr &target, std::string_view line)
     {
         auto args    = split(line, ' ');
         auto command = args[0];
+        auto process = &target->get_process();
 
         if (is_prefix(command, "continue"))
         {
             process->resume();
             auto reason = process->wait_on_signal();
-            handle_stop(*process, reason);
+            handle_stop(*target, reason);
         }
         else if (is_prefix(command, "register"))
         {
@@ -773,7 +793,7 @@ syscall <list of syscall IDs or names>
         else if (is_prefix(command, "step"))
         {
             auto reason = process->step_instruction();
-            handle_stop(*process, reason);
+            handle_stop(*target, reason);
         }
         else if (is_prefix(command, "memory"))
         {
@@ -801,28 +821,28 @@ syscall <list of syscall IDs or names>
         }
     }
 
-    sdb::proc_ptr
+    sdb::target_ptr
     attach(int argc, const char **argv)
     {
-        // attch (passing PID)
+        // passing PID (attach)
         if (argc == 3 && argv[1] == std::string_view("-p"))
         {
-
-            pid_t pid = std::atoi(argv[2]); // atoi returns 0 on failure
-            return sdb::process::attach(pid);
+            pid_t pid = std::atoi(argv[2]);
+            return sdb::target::attach(pid);
         }
-        // launch (passing program name)
+
+        // passing program name (launch)
         else
         {
-            auto program_path = argv[1];
-            auto proc         = sdb::process::launch(program_path);
-            fmt::print("launched process with PID {}\n", proc->pid());
-            return proc;
+            const char *program_path = argv[1];
+            auto        target       = sdb::target::launch(program_path);
+            fmt::print("launched process with PID {}\n", target->get_process().pid());
+            return target;
         }
     }
 
     void
-    main_loop(sdb::proc_ptr &process)
+    main_loop(sdb::target_ptr &target)
     {
         char *line = nullptr;
 
@@ -847,7 +867,7 @@ syscall <list of syscall IDs or names>
                 {
                     try
                     {
-                        handle_command(process, line_str);
+                        handle_command(target, line_str);
                     }
                     catch (const sdb::error &err)
                     {
@@ -870,13 +890,13 @@ main(int argc, const char **argv)
 
     try
     {
-        auto process = attach(argc, argv);
+        auto target = attach(argc, argv);
 
         // install interrupt handler
-        g_sdb_process = process.get();
+        g_sdb_process = &target->get_process();
         signal(SIGINT, handle_sigint);
 
-        main_loop(process);
+        main_loop(target);
     }
     catch (const sdb::error &err)
     {
